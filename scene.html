@@ -1,0 +1,125 @@
+<!doctype html><meta charset="utf-8"><style>*{margin:0}canvas{display:block}</style>
+<canvas id="film"></canvas><script type="module">
+import * as T from '/node_modules/three/build/three.module.js';
+const W=1080,H=1920, aspect=W/H;
+const renderer=new T.WebGLRenderer({canvas:film,antialias:true,preserveDrawingBuffer:true,alpha:false});
+renderer.setSize(W,H,false); renderer.outputColorSpace=T.SRGBColorSpace;
+const scene=new T.Scene(), stage=new T.Group();scene.add(stage);
+const camera=new T.PerspectiveCamera(10,aspect,.9,400);
+const load=new T.TextureLoader();
+const [city,skyline,cloud,folk,boat]=await Promise.all(['city.png','silhouette.png','clouds.jpg','front.png','boat.png'].map(p=>load.loadAsync(p)));
+for(const tex of [city,skyline,cloud,folk,boat]) {tex.colorSpace=T.SRGBColorSpace;tex.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());}
+const std=(color,map=null)=>new T.MeshBasicMaterial({color,map,side:T.DoubleSide});
+const transparent=map=>new T.MeshBasicMaterial({map,transparent:true,alphaTest:.045,side:T.DoubleSide});
+const phase={value:0};
+const panel=(map,w,h,x,y,z,material=null)=>{
+ const m=new T.Mesh(new T.PlaneGeometry(w,h),material??std(0xffffff,map));m.position.set(x,y,z);stage.add(m);return m;
+};
+const WIDTH=4.86,HT=8.64,top=HT/2, floor=-top, shore=top-HT*474/836;
+const side=WIDTH/2;
+function quad(points,uv,material) {
+ const geom=new T.BufferGeometry();
+ geom.setAttribute('position',new T.Float32BufferAttribute(points.flat(),3));
+ geom.setAttribute('uv',new T.Float32BufferAttribute(uv.flat(),2));
+ geom.setIndex([0,1,2,0,2,3]);const mesh=new T.Mesh(geom,material);stage.add(mesh);return mesh;
+}
+const uvFull=[[0,0],[1,0],[1,1],[0,1]];
+function solid(w,h,d,x,y,z,color) {
+ const m=new T.Mesh(new T.BoxGeometry(w,h,d),std(color));m.position.set(x,y,z);stage.add(m);return m;
+}
+// Sky plate and its thin, lacquered edge behind the skyline.
+const skyFace=std(0xffffff,cloud);
+quad([[-side,shore-.24,-1.96],[side,shore-.24,-1.96],[side,top,-1.96],[-side,top,-1.96]],[[0,(shore-.24-floor)/HT],[1,(shore-.24-floor)/HT],[1,1],[0,1]],skyFace);
+solid(WIDTH+.014,top-shore+.26,.045,0,(top+shore-.24)/2,-1.991,'#67513c');
+// Cut-profile thickness: the skyline is a real stack with visible inked edges.
+for(let j=0;j<7;j++) {
+ const mat=transparent(skyline);mat.color.set(j===6?0xffffff:(j===0?'#e1b17a':'#4f6277'));
+ panel(skyline,WIDTH,HT,0,0,-1.45+j*.027,mat);
+}
+const water=std(0xffffff,city);
+water.onBeforeCompile=s=>{
+ s.uniforms.time=phase;s.fragmentShader='uniform float time;\n'+s.fragmentShader;
+ s.fragmentShader=s.fragmentShader.replace('#include <map_fragment>',`
+ vec2 st=vMapUv;
+ float rip=smoothstep(.437,.08,st.y);
+ st.x+=rip*(.0017*sin(st.y*192.+time*2.)+.001*sin(st.y*423.-time*3.+st.x*13.));
+ st.y+=rip*.00075*sin(st.x*21.+st.y*225.+time*2.);
+ vec4 col=texture2D(map,st);
+ col.rgb*=1.+rip*.055*sin(st.y*172.+time*2.+st.x*8.);
+ diffuseColor*=col;`);
+};
+const zFar=-1.27,zNear=2.85;
+quad([[-side,floor,zNear],[side,floor,zNear],[side,shore,zFar],[-side,shore,zFar]],[[0,0],[1,0],[1,(shore-floor)/HT],[0,(shore-floor)/HT]],water);
+// The sawn banks make the model legible during the orbit.
+for(const k of [-1,1]) {
+ const x=k*side;
+ for(const [a,b,c] of [[0,.021,'#d8af7b'],[.021,.068,'#224253'],[.068,.091,'#68878a'],[.091,.25,'#183341'],[.25,.278,'#95724d']]){
+   quad([[x,floor-b,zNear],[x,shore-b,zFar],[x,shore-a,zFar],[x,floor-a,zNear]],uvFull,std(c));
+ }
+}
+solid(WIDTH,.23,.055,0,floor-.13,zNear,'#203744');
+solid(WIDTH+.01,.027,.07,0,floor-.019,zNear,'#bf9869');
+const fg=panel(folk,WIDTH+.015,WIDTH*2/3,0,floor+WIDTH/3,2.91,transparent(folk));fg.renderOrder=5;
+// Foreground's paper edge stays attached to the promenade when seen obliquely.
+for(const z of [2.86,2.885]){let m=transparent(folk);m.color.set('#715f54');panel(folk,WIDTH+.015,WIDTH*2/3,0,fg.position.y,z,m);}
+const boatW=1.42,boatH=boatW*2/3;
+const ferryY=-1.28, ferryZ=zFar+(shore-(ferryY-.22))/(shore-floor)*(zNear-zFar);
+function clippedBoat(mirror) {
+ const mat=transparent(boat);
+ mat.onBeforeCompile=s=>{
+   s.uniforms.time=phase;
+   s.vertexShader='varying float px;\n'+s.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\n px=(modelMatrix*vec4(position,1.)).x;');
+   s.fragmentShader='varying float px; uniform float time;\n'+s.fragmentShader.replace('#include <map_fragment>',`
+    if(abs(px)>2.418) discard;
+    vec2 st=vMapUv; ${mirror?'st.x+=.015*sin(st.y*96.+time*4.);':''}
+    diffuseColor*=texture2D(map,st);`);
+ };
+ mat.customProgramCacheKey=()=>String(mirror);
+ if(mirror){mat.opacity=.31;mat.color.set('#9db7bd');mat.depthWrite=false;}
+ return mat;
+}
+const boats=Array.from({length:2},()=>{const m=panel(boat,boatW,boatH,0,ferryY,ferryZ+.10,clippedBoat(false));m.renderOrder=3;
+ const r=panel(boat,boatW,boatH*.50,0,ferryY-.34,ferryZ+.20,clippedBoat(true));r.scale.y=-1;r.renderOrder=2;return [m,r];});
+// Sparse rain glints occupy separate depth planes. Integer temporal frequencies close the loop.
+let seed=947;const rand=()=>((seed=Math.imul(seed,1664525)+1013904223>>>0)/4294967296);
+const drops=Array.from({length:135},()=>[rand()*WIDTH-side,rand(),-1.4+rand()*3.7,.035+rand()*.083,3+Math.floor(rand()*3)]);
+const rainGeo=new T.BufferGeometry(),positions=new Float32Array(drops.length*6);
+rainGeo.setAttribute('position',new T.BufferAttribute(positions,3));
+const rain=new T.LineSegments(rainGeo,new T.LineBasicMaterial({color:'#c1dce3',transparent:true,opacity:.24,depthWrite:false}));rain.frustumCulled=false;stage.add(rain);
+// A dark indigo studio surround behind the opened illustration.
+const bgmat=new T.ShaderMaterial({depthWrite:false,vertexShader:'varying vec2 p;void main(){p=uv;gl_Position=vec4(position.xy,0.9999,1.);}',fragmentShader:`varying vec2 p;void main(){float g=exp(-4.*distance(p,vec2(.30,.60)));float v=exp(-7.*distance(p,vec2(.77,.20)));gl_FragColor=vec4(vec3(.024,.044,.085)+g*vec3(.105,.17,.21)+v*vec3(.12,.055,.054),1.);}`});
+const bg=new T.Mesh(new T.PlaneGeometry(2,2),bgmat);bg.frustumCulled=false;bg.renderOrder=-100;scene.add(bg);
+const ease=p=>p*p*(3-2*p);
+const curve=(time,keys)=>{for(let i=1;i<keys.length;i++){let [b,v]=keys[i],[a,u]=keys[i-1];if(time<=b)return T.MathUtils.lerp(u,v,ease((time-a)/(b-a)));}return keys.at(-1)[1];};
+window.renderFrame=(frame)=>{
+ const t=frame/30,p=t/10;phase.value=p*Math.PI*2;
+
+ // One straight camera rail. Lens shift maintains upright buildings and takes
+ // the framing from the near promenade up to the Pudong roofline.
+ const turn=5.6;
+ const u=t<turn?t/turn:(10-t)/(10-turn);
+ const advance=.5-.5*Math.cos(Math.PI*u);
+ const dist=64*Math.pow(6.8/64,advance);
+ const height=8.08*Math.pow(4.38/8.08,advance);
+ const focusDistance=dist+1.29;
+ camera.position.set(.98,.04,dist);camera.rotation.set(0,0,0);
+ camera.near=Math.max(.25,dist-6);camera.far=dist+16;
+ camera.fov=T.MathUtils.radToDeg(2*Math.atan(height/(2*focusDistance)));
+ camera.updateProjectionMatrix();
+ camera.projectionMatrix.elements[8]=-2*.98*(1-advance)/(height*aspect);
+ camera.projectionMatrix.elements[9]=2*1.48*advance/height;
+ camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  for(let i=0;i<2;i++){
+   let x=(-1.52+p*6.3+.48*(Math.cos(phase.value)-1))-i*6.3;
+   const bob=.013*Math.sin(p*Math.PI*6);
+   boats[i][0].position.x=boats[i][1].position.x=x;boats[i][0].position.y=ferryY+bob;boats[i][1].position.y=ferryY-.34-bob*.4;
+ }
+ for(let i=0;i<drops.length;i++){
+   const [x,s,z,len,speed]=drops[i],y=top-((s+p*speed)%1)*HT;
+   positions.set([x,y,z,x-.016,y-len,z],i*6);
+ }
+ rainGeo.attributes.position.needsUpdate=true;
+ renderer.render(scene,camera);
+};
+window.renderFrame(0);window.ready=true;
+</script>
